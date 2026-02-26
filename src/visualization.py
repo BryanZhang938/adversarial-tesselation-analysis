@@ -5,8 +5,6 @@ Generates publication-quality figures comparing standard vs adversarial training
 
 import os
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.gridspec import GridSpec

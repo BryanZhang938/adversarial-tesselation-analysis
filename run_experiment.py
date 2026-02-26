@@ -9,10 +9,6 @@ Usage:
     python run_experiment.py --epochs 300 --epsilon 0.15
 """
 
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-
 import os
 import sys
 import argparse
@@ -244,4 +240,7 @@ def main():
 
 
 if __name__ == "__main__":
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
     main()
