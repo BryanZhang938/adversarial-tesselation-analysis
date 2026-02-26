@@ -31,12 +31,22 @@ try:
     import splinecam.wrappers
     import splinecam.compute
     # Verify CUDA is available (SplineCam hardcodes .cuda() calls)
-    if torch.cuda.is_available():
-        SPLINECAM_AVAILABLE = True
-    else:
+    if not torch.cuda.is_available():
         _splinecam_import_error = "SplineCam imported but CUDA not available"
         print(f"[tessellation_analysis] {_splinecam_import_error}. "
               "Using grid-based analysis only.")
+    else:
+        # Check if graph_tool is available (needed for partition computation)
+        try:
+            import graph_tool
+            SPLINECAM_AVAILABLE = True
+        except ImportError:
+            _splinecam_import_error = (
+                "SplineCam imported but graph_tool not available. "
+                "Install via: mamba install -c conda-forge graph-tool"
+            )
+            print(f"[tessellation_analysis] {_splinecam_import_error}. "
+                  "Using grid-based analysis only.")
 except ImportError as e:
     _splinecam_import_error = str(e)
     print(f"[tessellation_analysis] SplineCam not available ({e}). "
@@ -490,4 +500,3 @@ def analyze_checkpoint(model_class, checkpoint_path, X_train, config, device="cp
             print(f"  SplineCam failed for epoch {stats['epoch']}: {e}")
 
     return stats, grid_data
-    

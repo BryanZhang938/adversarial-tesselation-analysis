@@ -40,7 +40,21 @@ import argparse
 # ============================================================================
 # Configuration
 # ============================================================================
-PROJECT_DIR = "/content/adversarial-tesselation-analysis"
+# Auto-detect project directory: use the directory this script lives in,
+# or fall back to common locations.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_CANDIDATE_DIRS = [
+    _SCRIPT_DIR,
+    "/content/tessellation_project",
+    "/content/adversarial-tesselation-analysis",
+    "/content/adversarial-tessellation-analysis",
+]
+PROJECT_DIR = _SCRIPT_DIR  # default
+for _d in _CANDIDATE_DIRS:
+    if os.path.isfile(os.path.join(_d, "run_experiment.py")):
+        PROJECT_DIR = _d
+        break
+
 SPLINECAM_DIR = "/content/splinecam"
 
 
@@ -83,6 +97,23 @@ def install_splinecam():
         run_cmd(f"git clone https://github.com/AhmedImtiazPrio/splinecam.git {SPLINECAM_DIR}")
     else:
         print(f"  SplineCam already cloned at {SPLINECAM_DIR}")
+
+    # Patch graph.py BEFORE importing — wrap graph_tool import in try/except
+    # so SplineCam doesn't crash when graph_tool is missing.
+    graph_path = os.path.join(SPLINECAM_DIR, "splinecam", "graph.py")
+    if os.path.exists(graph_path):
+        with open(graph_path, 'r') as f:
+            content = f.read()
+        if 'import graph_tool' in content and 'try:' not in content.split('import graph_tool')[0][-30:]:
+            content = content.replace(
+                'import graph_tool',
+                'try:\n    import graph_tool\nexcept ImportError:\n    graph_tool = None'
+            )
+            # Also fix the SyntaxWarning from invalid escape sequence
+            content = content.replace('\\i', '\\\\i')
+            with open(graph_path, 'w') as f:
+                f.write(content)
+            print("  Patched graph.py: wrapped graph_tool import in try-except")
 
     # Add to sys.path (since there's no setup.py/pyproject.toml)
     if SPLINECAM_DIR not in sys.path:
