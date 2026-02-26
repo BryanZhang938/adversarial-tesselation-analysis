@@ -40,7 +40,7 @@ import argparse
 # ============================================================================
 # Configuration
 # ============================================================================
-PROJECT_DIR = "/content/tessellation_project"
+PROJECT_DIR = "/content/adversarial-tesselation-analysis"
 SPLINECAM_DIR = "/content/splinecam"
 
 
