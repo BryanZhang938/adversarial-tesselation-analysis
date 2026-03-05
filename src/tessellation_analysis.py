@@ -282,7 +282,8 @@ def get_activation_pattern(model, x):
 
 
 def compute_grid_statistics(model, domain_range=(-1.5, 1.5), resolution=200,
-                            data_points=None, device="cpu"):
+                            data_points=None, device="cpu",
+                            local_complexity_radius=0.1):
     """
     Compute tessellation statistics by evaluating the network on a dense grid.
     This works without SplineCam and on CPU.
@@ -341,30 +342,59 @@ def compute_grid_statistics(model, domain_range=(-1.5, 1.5), resolution=200,
     region_ids_grid = region_ids.reshape(resolution, resolution)
     preds_grid = preds.reshape(resolution, resolution)
 
-    # Estimate decision boundary density
-    # Count grid cells where the prediction changes between neighbors
-    boundary_pixels = 0
-    for i in range(resolution - 1):
-        for j in range(resolution - 1):
-            if (preds_grid[i, j] != preds_grid[i+1, j] or
-                preds_grid[i, j] != preds_grid[i, j+1]):
-                boundary_pixels += 1
-    pixel_size = (hi - lo) / resolution
-    stats["boundary_density"] = boundary_pixels * pixel_size
+    # Cell area distribution: count pixels per region and multiply by pixel area
+    pixel_area = ((hi - lo) / resolution) ** 2
+    unique_ids, counts = np.unique(region_ids, return_counts=True)
+    cell_areas = counts * pixel_area
+    stats["cell_area_median"] = float(np.median(cell_areas))
+    stats["cell_area_iqr"] = float(np.percentile(cell_areas, 75) - np.percentile(cell_areas, 25))
+    stats["cell_area_mean"] = float(np.mean(cell_areas))
+    stats["cell_area_q25"] = float(np.percentile(cell_areas, 25))
+    stats["cell_area_q75"] = float(np.percentile(cell_areas, 75))
+    stats["cell_areas"] = cell_areas
 
-    # Estimate region boundary density (activation pattern changes)
+    # Estimate boundary density (BD): total tessellation edge length within
+    # [-1,1]^2, normalized by area. Per paper: BD = total_edge_length / area.
+    # We approximate edge length by counting grid cells where the activation
+    # pattern changes and multiplying by pixel_size (each change ~ one edge
+    # segment of length pixel_size).
+    pixel_size = (hi - lo) / resolution
+    data_domain_area = 4.0  # [-1,1]^2 has area 4
+
+    # Restrict boundary density computation to [-1,1]^2 (data region)
+    lo_idx = int(((-1.0) - lo) / (hi - lo) * resolution)
+    hi_idx = int((1.0 - lo) / (hi - lo) * resolution)
+    lo_idx = max(0, lo_idx)
+    hi_idx = min(resolution - 1, hi_idx)
+
+    # Total tessellation edge length within data region
     region_boundary_pixels = 0
-    for i in range(resolution - 1):
-        for j in range(resolution - 1):
-            if (region_ids_grid[i, j] != region_ids_grid[i+1, j] or
-                region_ids_grid[i, j] != region_ids_grid[i, j+1]):
+    for i in range(lo_idx, hi_idx):
+        for j in range(lo_idx, hi_idx):
+            if region_ids_grid[i, j] != region_ids_grid[i+1, j]:
                 region_boundary_pixels += 1
-    stats["region_boundary_density"] = region_boundary_pixels * pixel_size
+            if region_ids_grid[i, j] != region_ids_grid[i, j+1]:
+                region_boundary_pixels += 1
+
+    total_edge_length = region_boundary_pixels * pixel_size
+    stats["boundary_density"] = total_edge_length / data_domain_area
+    stats["total_edge_length"] = total_edge_length
+
+    # Decision boundary density (classification-changing edges only)
+    decision_boundary_pixels = 0
+    for i in range(lo_idx, hi_idx):
+        for j in range(lo_idx, hi_idx):
+            if preds_grid[i, j] != preds_grid[i+1, j]:
+                decision_boundary_pixels += 1
+            if preds_grid[i, j] != preds_grid[i, j+1]:
+                decision_boundary_pixels += 1
+    stats["decision_boundary_density"] = decision_boundary_pixels * pixel_size / data_domain_area
 
     # Local region density near data points
     if data_points is not None:
         local_counts = compute_local_region_count(
-            model, data_points, radius=0.2, n_samples=200, device=device
+            model, data_points, radius=local_complexity_radius,
+            n_samples=200, device=device
         )
         stats["local_region_count_mean"] = float(np.mean(local_counts))
         stats["local_region_count_std"] = float(np.std(local_counts))
@@ -454,6 +484,98 @@ def estimate_boundary_distances_grid(preds_grid, data_points, domain_range,
     return np.array(distances)
 
 
+# ============================================================================
+# Poisson hyperplane tessellation baseline
+# ============================================================================
+
+def poisson_hyperplane_tessellation(intensity, domain_range=(-1.0, 1.0),
+                                     resolution=200, seed=None):
+    """
+    Generate a Poisson hyperplane tessellation in 2D and compute statistics.
+
+    A Poisson line process in R^2 with intensity lambda produces random lines
+    whose total length per unit area matches lambda. For a square domain of
+    side L, the expected number of lines crossing the domain is lambda * L * pi / 2
+    (from integral geometry). We match the intensity to the network's boundary
+    density at each checkpoint.
+
+    Args:
+        intensity: boundary density (total edge length / area) to match
+        domain_range: (lo, hi) for the square domain
+        resolution: grid resolution for computing statistics
+        seed: random seed
+
+    Returns:
+        stats: dict with tessellation statistics for comparison
+    """
+    rng = np.random.RandomState(seed)
+    lo, hi = domain_range
+    L = hi - lo
+    area = L ** 2
+
+    # Expected number of lines crossing the domain
+    # For a Poisson line process with intensity lambda (length per unit area),
+    # the expected number of lines hitting a convex body K is:
+    #   E[N] = lambda * perimeter(K) / pi  (for lines in R^2)
+    # For a square of side L: perimeter = 4L, so E[N] = 4*lambda*L/pi
+    # But we want total edge length in domain ~ intensity * area.
+    # Each line crossing the domain contributes ~L length on average.
+    # So n_lines ~ intensity * area / L = intensity * L
+    expected_lines = max(1, int(intensity * L))
+    n_lines = rng.poisson(expected_lines)
+
+    if n_lines == 0:
+        n_lines = 1
+
+    # Generate random lines: each parameterized by (angle, offset)
+    # angle in [0, pi), offset = signed distance from origin
+    angles = rng.uniform(0, np.pi, n_lines)
+    offsets = rng.uniform(-L * np.sqrt(2) / 2, L * np.sqrt(2) / 2, n_lines)
+
+    # Evaluate on grid to compute region statistics
+    xx = np.linspace(lo, hi, resolution)
+    yy = np.linspace(lo, hi, resolution)
+    grid_x, grid_y = np.meshgrid(xx, yy)
+
+    # Assign each grid point a region ID based on which side of each line it falls
+    # Each line divides space into 2 half-planes -> binary code of length n_lines
+    # Region ID = integer encoding of this binary vector
+    # For efficiency, compute sign of (x*cos(a) + y*sin(a) - d) for each line
+    region_codes = np.zeros((resolution, resolution), dtype=np.int64)
+    for k in range(min(n_lines, 63)):  # cap at 63 to avoid overflow
+        sign = (grid_x * np.cos(angles[k]) +
+                grid_y * np.sin(angles[k]) - offsets[k]) > 0
+        region_codes += sign.astype(np.int64) * (2 ** k)
+
+    # Count unique regions
+    unique_ids, counts = np.unique(region_codes.ravel(), return_counts=True)
+    pixel_area = (L / resolution) ** 2
+    cell_areas = counts * pixel_area
+
+    # Compute boundary pixels (where region code changes)
+    boundary_pixels = 0
+    for i in range(resolution - 1):
+        for j in range(resolution - 1):
+            if region_codes[i, j] != region_codes[i+1, j]:
+                boundary_pixels += 1
+            if region_codes[i, j] != region_codes[i, j+1]:
+                boundary_pixels += 1
+
+    pixel_size = L / resolution
+    total_edge_length = boundary_pixels * pixel_size
+
+    stats = {
+        "num_regions": len(unique_ids),
+        "cell_area_median": float(np.median(cell_areas)),
+        "cell_area_iqr": float(np.percentile(cell_areas, 75) - np.percentile(cell_areas, 25)),
+        "boundary_density": total_edge_length / area,
+        "total_edge_length": total_edge_length,
+        "n_lines": n_lines,
+    }
+
+    return stats
+
+
 def analyze_checkpoint(model_class, checkpoint_path, X_train, config, device="cpu"):
     """
     Load a checkpoint and compute all tessellation statistics.
@@ -481,8 +603,19 @@ def analyze_checkpoint(model_class, checkpoint_path, X_train, config, device="cp
         resolution=config.tess.resolution,
         data_points=X_train,
         device=device,
+        local_complexity_radius=getattr(config.tess, 'local_complexity_radius', 0.1),
     )
     stats["epoch"] = ckpt["epoch"]
+
+    # Poisson hyperplane tessellation baseline (matched intensity)
+    if "boundary_density" in stats:
+        poisson_stats = poisson_hyperplane_tessellation(
+            intensity=stats["boundary_density"],
+            domain_range=(-1.0, 1.0),  # data region per paper
+            resolution=config.tess.resolution,
+            seed=ckpt["epoch"],  # deterministic but varying per epoch
+        )
+        stats.update({f"poisson_{k}": v for k, v in poisson_stats.items()})
 
     # SplineCam analysis if available AND on CUDA
     if SPLINECAM_AVAILABLE and torch.cuda.is_available():

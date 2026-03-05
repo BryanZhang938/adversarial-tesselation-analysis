@@ -31,19 +31,21 @@ def train_model(model, dataloader, config, checkpoint_dir="checkpoints",
     model = model.to(device)
     criterion = nn.CrossEntropyLoss()
 
-    if config.train.optimizer == "adam":
-        optimizer = optim.Adam(
-            model.parameters(),
-            lr=config.train.lr,
-            weight_decay=config.train.weight_decay
-        )
-    elif config.train.optimizer == "sgd":
+    if config.train.optimizer == "sgd":
         optimizer = optim.SGD(
             model.parameters(),
             lr=config.train.lr,
-            momentum=0.9,
-            weight_decay=config.train.weight_decay
+            momentum=getattr(config.train, 'momentum', 0.9),
+            weight_decay=config.train.weight_decay,
         )
+    elif config.train.optimizer == "adam":
+        optimizer = optim.Adam(
+            model.parameters(),
+            lr=config.train.lr,
+            weight_decay=config.train.weight_decay,
+        )
+    else:
+        raise ValueError(f"Unknown optimizer: {config.train.optimizer}")
 
     scheduler = None
     if config.train.scheduler == "cosine":
@@ -54,6 +56,7 @@ def train_model(model, dataloader, config, checkpoint_dir="checkpoints",
         scheduler = optim.lr_scheduler.StepLR(
             optimizer, step_size=50, gamma=0.5
         )
+    # scheduler == "none" -> no scheduler (paper does not use one)
 
     os.makedirs(checkpoint_dir, exist_ok=True)
 

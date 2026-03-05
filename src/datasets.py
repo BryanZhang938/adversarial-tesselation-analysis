@@ -8,8 +8,20 @@ import torch
 from torch.utils.data import TensorDataset, DataLoader
 
 
+def _normalize_to_unit_square(X):
+    """Normalize points to [-1, 1]^2 by centering and scaling by max abs value."""
+    X = X - X.mean(axis=0)
+    scale = np.abs(X).max()
+    if scale > 0:
+        X = X / scale
+    return X
+
+
 def make_spirals(n_samples=500, noise=0.1, seed=42):
-    """Two interleaved spirals. Classic nonlinear binary classification."""
+    """
+    Two interleaved Archimedean spirals with additive Gaussian noise (sigma=noise).
+    Normalized to [-1, 1]^2 per paper specification.
+    """
     rng = np.random.RandomState(seed)
     n = n_samples // 2
 
@@ -34,11 +46,17 @@ def make_spirals(n_samples=500, noise=0.1, seed=42):
     X = np.vstack([x1, x2]).astype(np.float32)
     y = np.hstack([np.zeros(n), np.ones(n)]).astype(np.int64)
 
+    # Normalize to [-1, 1]^2
+    X = _normalize_to_unit_square(X)
+
     return X, y
 
 
 def make_concentric_rings(n_samples=500, noise=0.05, seed=42):
-    """Two concentric rings (annuli). Tests radial decision boundary."""
+    """
+    Two concentric rings with a gap, admitting a radially symmetric
+    optimal boundary. Normalized to [-1, 1]^2.
+    """
     rng = np.random.RandomState(seed)
     n = n_samples // 2
 
@@ -54,6 +72,9 @@ def make_concentric_rings(n_samples=500, noise=0.05, seed=42):
 
     X = np.vstack([x1, x2]).astype(np.float32)
     y = np.hstack([np.zeros(n), np.ones(n)]).astype(np.int64)
+
+    # Normalize to [-1, 1]^2
+    X = _normalize_to_unit_square(X)
 
     return X, y
 
@@ -77,13 +98,25 @@ DATASET_REGISTRY = {
 }
 
 
-def get_dataset(name, n_samples=500, noise=0.1, seed=42):
-    """Generate dataset and return as torch TensorDataset."""
+def get_dataset(name, n_samples=500, noise=0.1, seed=42, n_test=200):
+    """
+    Generate train and test datasets.
+
+    Returns:
+        train_dataset: TensorDataset for training
+        X_train, y_train: numpy arrays
+        X_test, y_test: numpy arrays (n_test points, separate seed)
+    """
     make_fn = DATASET_REGISTRY[name]
-    X, y = make_fn(n_samples=n_samples, noise=noise, seed=seed)
-    X_tensor = torch.from_numpy(X)
-    y_tensor = torch.from_numpy(y)
-    return TensorDataset(X_tensor, y_tensor), X, y
+    X_train, y_train = make_fn(n_samples=n_samples, noise=noise, seed=seed)
+    # Generate test set with a different seed
+    X_test, y_test = make_fn(n_samples=n_test, noise=noise, seed=seed + 1000)
+
+    X_tensor = torch.from_numpy(X_train)
+    y_tensor = torch.from_numpy(y_train)
+    train_dataset = TensorDataset(X_tensor, y_tensor)
+
+    return train_dataset, X_train, y_train, X_test, y_test
 
 
 def get_dataloader(dataset, batch_size=64, shuffle=True):

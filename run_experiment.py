@@ -17,9 +17,13 @@ import copy
 import numpy as np
 import torch
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
 from configs.experiment_config import (
     ExperimentConfig, DataConfig, ModelConfig, TrainConfig,
-    AdversarialConfig, TessellationConfig,
+    AdversarialConfig, TessellationConfig, _compute_checkpoint_epochs,
 )
 from src.datasets import get_dataset, get_dataloader
 from src.models import make_relu_mlp, count_parameters
@@ -39,12 +43,14 @@ def parse_args():
                         choices=["spirals", "concentric_rings", "moons"])
     parser.add_argument("--n_samples", type=int, default=500)
     parser.add_argument("--noise", type=float, default=0.1)
-    parser.add_argument("--hidden_dims", type=int, nargs="+", default=[32, 32, 32])
-    parser.add_argument("--epochs", type=int, default=200)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--hidden_dims", type=int, nargs="+", default=[50])
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="Override epochs (default: 500 spirals, 300 rings)")
+    parser.add_argument("--lr", type=float, default=0.01)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--epsilon", type=float, default=0.1)
-    parser.add_argument("--pgd_steps", type=int, default=10)
+    parser.add_argument("--pgd_steps", type=int, default=7)
+    parser.add_argument("--num_checkpoints", type=int, default=50)
     parser.add_argument("--grid_resolution", type=int, default=200)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
@@ -58,21 +64,29 @@ def build_config(args):
     cfg.data.n_samples = args.n_samples
     cfg.data.noise = args.noise
     cfg.model.hidden_dims = args.hidden_dims
-    cfg.train.epochs = args.epochs
+
+    # Set epochs per paper: T=500 (spirals), T=300 (rings)
+    if args.epochs is not None:
+        cfg.train.epochs = args.epochs
+    elif args.dataset == "concentric_rings":
+        cfg.train.epochs = 300
+    else:
+        cfg.train.epochs = 500
+
     cfg.train.lr = args.lr
     cfg.train.batch_size = args.batch_size
     cfg.adv.epsilon = args.epsilon
     cfg.adv.num_steps = args.pgd_steps
     cfg.adv.step_size = args.epsilon / 4
     cfg.tess.resolution = args.grid_resolution
+    cfg.tess.num_checkpoints = args.num_checkpoints
     cfg.seed = args.seed
     cfg.device = args.device
 
-    # Adjust checkpoint epochs to be within training range
-    cfg.tess.checkpoint_epochs = [
-        e for e in [1, 5, 10, 20, 50, 100, 150, 200, 250, 300]
-        if e <= args.epochs
-    ]
+    # Compute M=50 evenly spaced checkpoints
+    cfg.tess.checkpoint_epochs = _compute_checkpoint_epochs(
+        cfg.train.epochs, cfg.tess.num_checkpoints
+    )
 
     return cfg
 
@@ -144,14 +158,15 @@ def main():
     os.makedirs(config.figure_dir, exist_ok=True)
     os.makedirs(config.results_dir, exist_ok=True)
 
-    # Generate dataset
-    dataset, X_train, y_train = get_dataset(
+    # Generate dataset (n=500 train, 200 test per paper)
+    dataset, X_train, y_train, X_test, y_test = get_dataset(
         config.data.dataset,
         n_samples=config.data.n_samples,
         noise=config.data.noise,
         seed=config.data.seed,
+        n_test=200,
     )
-    print(f"Dataset: {config.data.dataset}, n={len(X_train)}")
+    print(f"Dataset: {config.data.dataset}, n_train={len(X_train)}, n_test={len(X_test)}")
 
     # Plot dataset
     fig, ax = plt.subplots(figsize=(5, 5))
@@ -240,7 +255,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
     main()

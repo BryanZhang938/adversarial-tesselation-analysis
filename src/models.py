@@ -7,10 +7,13 @@ import torch
 import torch.nn as nn
 
 
-def make_relu_mlp(input_dim=2, hidden_dims=[32, 32, 32], output_dim=2):
+def make_relu_mlp(input_dim=2, hidden_dims=[50], output_dim=2):
     """
-    Build a ReLU MLP as nn.Sequential.
+    Build a ReLU MLP as nn.Sequential with Kaiming initialization.
     SplineCam requires Sequential models with supported layers.
+
+    Uses Kaiming (He) initialization per He et al. (2015), as specified
+    in the experimental setup.
     """
     layers = []
     prev_dim = input_dim
@@ -23,6 +26,14 @@ def make_relu_mlp(input_dim=2, hidden_dims=[32, 32, 32], output_dim=2):
     layers.append(nn.Linear(prev_dim, output_dim))
 
     model = nn.Sequential(*layers)
+
+    # Apply Kaiming initialization (He et al., 2015)
+    for m in model.modules():
+        if isinstance(m, nn.Linear):
+            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+
     return model
 
 
