@@ -639,6 +639,8 @@ def analyze_checkpoint(model_class, checkpoint_path, X_train, config, device="cp
             grid_data["splinecam_regions"] = regions
             grid_data["splinecam_db_edges"] = db_edges
         except Exception as e:
+            import traceback
             print(f"  SplineCam failed for epoch {stats['epoch']}: {e}")
+            traceback.print_exc()
 
     return stats, grid_data
