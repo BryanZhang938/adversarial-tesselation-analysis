@@ -188,12 +188,15 @@ def compute_splinecam_tessellation(model, domain_range=(-1.5, 1.5), device="cuda
     # Wrap model using the correct API
     # input_shape=(2,) for 2D input
     # T=None means no pre-computed projection
+    # as_sequential=False keeps layers as a list so get_partitions_with_db
+    # can slice them (nn.Sequential doesn't support slicing)
     T = splinecam.wrappers.model_wrapper(
         model_copy,
         input_shape=(2,),
         T=None,
         dtype=torch.float64,
         device=device,
+        as_sequential=False,
     )
 
     # Compute partitions with decision boundary
