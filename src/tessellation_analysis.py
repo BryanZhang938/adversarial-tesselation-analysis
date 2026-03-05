@@ -265,11 +265,19 @@ def compute_splinecam_statistics(regions, db_edges, data_points=None):
     total_db_length = 0.0
     if db_edges is not None:
         for edge in db_edges:
-            edge = np.array(edge)
-            if len(edge) >= 2:
-                total_db_length += np.sqrt(
-                    np.sum((edge[1] - edge[0]) ** 2)
-                )
+            try:
+                edge = np.asarray(edge)
+                if edge.ndim >= 2 and edge.shape[0] >= 2:
+                    total_db_length += np.sqrt(
+                        np.sum((edge[1] - edge[0]) ** 2)
+                    )
+                elif edge.ndim == 1 and edge.shape[0] >= 4:
+                    # Flattened [x1, y1, x2, y2] format
+                    total_db_length += np.sqrt(
+                        (edge[2] - edge[0]) ** 2 + (edge[3] - edge[1]) ** 2
+                    )
+            except (TypeError, IndexError, ValueError):
+                continue
     stats["total_db_length"] = total_db_length
 
     return stats
