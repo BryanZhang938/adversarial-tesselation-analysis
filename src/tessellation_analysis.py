@@ -190,7 +190,7 @@ def compute_splinecam_tessellation(model, domain_range=(-1.5, 1.5), device="cuda
     # T=None means no pre-computed projection
     # as_sequential=False keeps layers as a list so get_partitions_with_db
     # can slice them (nn.Sequential doesn't support slicing)
-    T = splinecam.wrappers.model_wrapper(
+    NN = splinecam.wrappers.model_wrapper(
         model_copy,
         input_shape=(2,),
         T=None,
@@ -199,13 +199,19 @@ def compute_splinecam_tessellation(model, domain_range=(-1.5, 1.5), device="cuda
         as_sequential=False,
     )
 
-    # Compute partitions with decision boundary
-    # Third arg is projection matrix (None for 2D)
-    regions, db_edges = splinecam.compute.get_partitions_with_db(
-        domain, T, None
+    # get_partitions_with_db(domain, T, NN) expects:
+    #   domain: (V, 2) tensor of domain vertices on GPU
+    #   T: (2, 3) projection matrix [I | 0] for 2D inputs
+    #   NN: the model_wrapper object
+    domain_t = torch.from_numpy(domain).to(device)
+    T_proj = torch.eye(3, dtype=torch.float64, device=device)[:2]  # 2x3: [I | 0]
+
+    regions, db_edges, Abw = splinecam.compute.get_partitions_with_db(
+        domain_t, T_proj, NN,
+        fwd_batch_size=512, batch_size=64, n_workers=0
     )
 
-    return regions, db_edges, T
+    return regions, db_edges, NN
 
 
 def compute_splinecam_statistics(regions, db_edges, data_points=None):
