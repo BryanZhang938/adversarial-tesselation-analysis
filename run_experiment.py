@@ -22,8 +22,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from configs.experiment_config import (
-    ExperimentConfig, DataConfig, ModelConfig, TrainConfig,
-    AdversarialConfig, TessellationConfig, _compute_checkpoint_epochs,
+    ExperimentConfig, _compute_checkpoint_epochs, make_config,
 )
 from src.datasets import get_dataset, get_dataloader
 from src.models import make_relu_mlp, count_parameters
@@ -91,7 +90,8 @@ def build_config(args):
     return cfg
 
 
-def run_single_experiment(config, X_train, y_train, dataset, run_name, device):
+def run_single_experiment(config, X_train, y_train, dataset, run_name, device,
+                          X_test=None, y_test=None):
     """Train one model and analyze checkpoints."""
     # Set seed for reproducibility
     torch.manual_seed(config.seed)
@@ -107,6 +107,12 @@ def run_single_experiment(config, X_train, y_train, dataset, run_name, device):
     print(f"Running: {run_name}")
     print(f"Model: {config.model.hidden_dims}, "
           f"params: {count_parameters(model)}")
+    print(f"Epochs: {config.train.epochs}, LR: {config.train.lr}, "
+          f"Scheduler: {config.train.scheduler}")
+    if config.adv.enabled:
+        print(f"Adversarial: eps={config.adv.epsilon}, "
+              f"steps={config.adv.num_steps}, "
+              f"step_size={config.adv.step_size:.4f}")
     print(f"{'='*60}")
 
     # Train
@@ -117,6 +123,8 @@ def run_single_experiment(config, X_train, y_train, dataset, run_name, device):
         checkpoint_dir=checkpoint_dir,
         run_name=run_name,
         device=device,
+        X_test=X_test,
+        y_test=y_test,
     )
 
     # Analyze checkpoints
@@ -180,7 +188,8 @@ def main():
 
     hist_std, stats_std, grids_std = run_single_experiment(
         config_std, X_train, y_train, dataset,
-        run_name="standard", device=config.device
+        run_name="standard", device=config.device,
+        X_test=X_test, y_test=y_test,
     )
 
     # ---- Adversarial Training ----
@@ -189,7 +198,8 @@ def main():
 
     hist_adv, stats_adv, grids_adv = run_single_experiment(
         config_adv, X_train, y_train, dataset,
-        run_name="adversarial", device=config.device
+        run_name="adversarial", device=config.device,
+        X_test=X_test, y_test=y_test,
     )
 
     # ---- Generate Figures ----
