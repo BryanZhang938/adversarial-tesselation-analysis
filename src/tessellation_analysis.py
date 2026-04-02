@@ -22,19 +22,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-# ---- Monkey-patch torch.Tensor.__len__ to handle 0-D tensors ----
-# SplineCam calls len() on tensors from torch.where() which can be 0-D.
-# Standard PyTorch raises "len() of unsized object" for 0-D tensors.
-# This patch makes 0-D tensors return 1 (they contain one element).
-if not getattr(torch.Tensor.__len__, '_patched_for_splinecam', False):
-    _orig_tensor_len = torch.Tensor.__len__
-    def _patched_tensor_len(self):
-        if self.dim() == 0:
-            return 1
-        return _orig_tensor_len(self)
-    _patched_tensor_len._patched_for_splinecam = True
-    torch.Tensor.__len__ = _patched_tensor_len
-
 # ---- SplineCam import with robustness checks ----
 SPLINECAM_AVAILABLE = False
 _splinecam_import_error = None
