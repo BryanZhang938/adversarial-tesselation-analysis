@@ -9,10 +9,14 @@ from typing import List, Tuple
 @dataclass
 class DataConfig:
     """Synthetic dataset parameters."""
-    dataset: str = "spirals"  # "spirals", "concentric_rings", "moons"
+    dataset: str = "concentric_rings"  # "spirals", "concentric_rings", "moons"
     n_samples: int = 500
-    noise: float = 0.1
+    noise: float = 0.05          # reduced noise for rings (was 0.1 for spirals)
     seed: int = 42
+    # Concentric rings geometry: gap must be > 2*epsilon post-normalization
+    # With inner=0.3, outer=1.0, noise=0.05: worst-case gap ≈ 0.30 >> 2*0.1 = 0.20
+    inner_radius: float = 0.3
+    outer_radius: float = 1.0
     # Domain for tessellation visualization
     domain_range: Tuple[float, float] = (-1.5, 1.5)
 

@@ -17,7 +17,7 @@ def _normalize_to_unit_square(X):
     return X
 
 
-def make_spirals(n_samples=500, noise=0.1, seed=42):
+def make_spirals(n_samples=500, noise=0.1, seed=42, **kwargs):
     """
     Two interleaved Archimedean spirals with additive Gaussian noise (sigma=noise).
     Normalized to [-1, 1]^2 per paper specification.
@@ -52,22 +52,28 @@ def make_spirals(n_samples=500, noise=0.1, seed=42):
     return X, y
 
 
-def make_concentric_rings(n_samples=500, noise=0.05, seed=42):
+def make_concentric_rings(n_samples=500, noise=0.05, seed=42,
+                          inner_radius=0.3, outer_radius=1.0):
     """
     Two concentric rings with a gap, admitting a radially symmetric
     optimal boundary. Normalized to [-1, 1]^2.
+
+    The annular gap (outer_radius - inner_radius) must be > 2*epsilon
+    post-normalization for PGD-AT to be feasible. With the defaults
+    (inner=0.3, outer=1.0, noise=0.05), the worst-case post-normalization
+    gap is ~0.30, well above 2*epsilon=0.20 for epsilon=0.1.
     """
     rng = np.random.RandomState(seed)
     n = n_samples // 2
 
     # Inner ring
     theta1 = rng.uniform(0, 2 * np.pi, n)
-    r1 = 0.4 + rng.randn(n) * noise
+    r1 = inner_radius + rng.randn(n) * noise
     x1 = np.column_stack([r1 * np.cos(theta1), r1 * np.sin(theta1)])
 
     # Outer ring
     theta2 = rng.uniform(0, 2 * np.pi, n)
-    r2 = 1.0 + rng.randn(n) * noise
+    r2 = outer_radius + rng.randn(n) * noise
     x2 = np.column_stack([r2 * np.cos(theta2), r2 * np.sin(theta2)])
 
     X = np.vstack([x1, x2]).astype(np.float32)
@@ -79,7 +85,7 @@ def make_concentric_rings(n_samples=500, noise=0.05, seed=42):
     return X, y
 
 
-def make_moons(n_samples=500, noise=0.1, seed=42):
+def make_moons(n_samples=500, noise=0.1, seed=42, **kwargs):
     """Two interleaving half-moons."""
     from sklearn.datasets import make_moons as _make_moons
     X, y = _make_moons(n_samples=n_samples, noise=noise, random_state=seed)
@@ -98,9 +104,18 @@ DATASET_REGISTRY = {
 }
 
 
-def get_dataset(name, n_samples=500, noise=0.1, seed=42, n_test=200):
+def get_dataset(name, n_samples=500, noise=0.1, seed=42, n_test=200, **kwargs):
     """
     Generate train and test datasets.
+
+    Args:
+        name: dataset name ("spirals", "concentric_rings", "moons")
+        n_samples: number of training samples
+        noise: noise level
+        seed: random seed
+        n_test: number of test samples
+        **kwargs: extra keyword args forwarded to the dataset factory
+                  (e.g. inner_radius, outer_radius for concentric_rings)
 
     Returns:
         train_dataset: TensorDataset for training
@@ -108,9 +123,9 @@ def get_dataset(name, n_samples=500, noise=0.1, seed=42, n_test=200):
         X_test, y_test: numpy arrays (n_test points, separate seed)
     """
     make_fn = DATASET_REGISTRY[name]
-    X_train, y_train = make_fn(n_samples=n_samples, noise=noise, seed=seed)
+    X_train, y_train = make_fn(n_samples=n_samples, noise=noise, seed=seed, **kwargs)
     # Generate test set with a different seed
-    X_test, y_test = make_fn(n_samples=n_test, noise=noise, seed=seed + 1000)
+    X_test, y_test = make_fn(n_samples=n_test, noise=noise, seed=seed + 1000, **kwargs)
 
     X_tensor = torch.from_numpy(X_train)
     y_tensor = torch.from_numpy(y_train)

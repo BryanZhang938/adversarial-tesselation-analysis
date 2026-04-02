@@ -39,10 +39,14 @@ from src.visualization import (
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Tessellation dynamics experiment")
-    parser.add_argument("--dataset", type=str, default="spirals",
+    parser.add_argument("--dataset", type=str, default="concentric_rings",
                         choices=["spirals", "concentric_rings", "moons"])
     parser.add_argument("--n_samples", type=int, default=500)
-    parser.add_argument("--noise", type=float, default=0.1)
+    parser.add_argument("--noise", type=float, default=0.05)
+    parser.add_argument("--inner_radius", type=float, default=0.3,
+                        help="Inner ring radius for concentric_rings (default: 0.3)")
+    parser.add_argument("--outer_radius", type=float, default=1.0,
+                        help="Outer ring radius for concentric_rings (default: 1.0)")
     parser.add_argument("--hidden_dims", type=int, nargs="+", default=[50])
     parser.add_argument("--epochs", type=int, default=None,
                         help="Override epochs (default: 500 spirals, 300 rings)")
@@ -63,6 +67,8 @@ def build_config(args):
     cfg.data.dataset = args.dataset
     cfg.data.n_samples = args.n_samples
     cfg.data.noise = args.noise
+    cfg.data.inner_radius = args.inner_radius
+    cfg.data.outer_radius = args.outer_radius
     cfg.model.hidden_dims = args.hidden_dims
 
     # Set epochs per paper: T=500 (spirals), T=300 (rings)
@@ -159,12 +165,18 @@ def main():
     os.makedirs(config.results_dir, exist_ok=True)
 
     # Generate dataset (n=500 train, 200 test per paper)
+    # For concentric_rings, pass inner/outer radius to ensure gap > 2*epsilon
+    dataset_kwargs = {}
+    if config.data.dataset == "concentric_rings":
+        dataset_kwargs["inner_radius"] = config.data.inner_radius
+        dataset_kwargs["outer_radius"] = config.data.outer_radius
     dataset, X_train, y_train, X_test, y_test = get_dataset(
         config.data.dataset,
         n_samples=config.data.n_samples,
         noise=config.data.noise,
         seed=config.data.seed,
         n_test=200,
+        **dataset_kwargs,
     )
     print(f"Dataset: {config.data.dataset}, n_train={len(X_train)}, n_test={len(X_test)}")
 
@@ -242,6 +254,9 @@ def main():
             "hidden_dims": config.model.hidden_dims,
             "epochs": config.train.epochs,
             "epsilon": config.adv.epsilon,
+            "noise": config.data.noise,
+            "inner_radius": config.data.inner_radius,
+            "outer_radius": config.data.outer_radius,
         },
         "standard": serialize_stats(stats_std),
         "adversarial": serialize_stats(stats_adv),
