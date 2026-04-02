@@ -1,14 +1,9 @@
 """
 Training loops for standard (ERM) and adversarial (PGD-AT) training.
 Saves model checkpoints at specified epochs for tessellation analysis.
-
-Updated April 2026: added evaluate_accuracy / evaluate_robust_accuracy
-helpers and optional convergence tracking (X_test, y_test) for the
-(gap, epsilon) feasibility sweep.
 """
 
 import os
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -17,34 +12,8 @@ from tqdm import tqdm
 from src.adversarial import pgd_attack
 
 
-def evaluate_accuracy(model, X, y, device="cpu"):
-    """Compute clean accuracy on a held-out set."""
-    model.eval()
-    X_t = torch.from_numpy(X).to(device) if isinstance(X, np.ndarray) else X.to(device)
-    y_t = torch.from_numpy(y).to(device) if isinstance(y, np.ndarray) else y.to(device)
-    with torch.no_grad():
-        preds = model(X_t).argmax(dim=1)
-    return (preds == y_t).float().mean().item()
-
-
-def evaluate_robust_accuracy(model, X, y, epsilon, step_size=None,
-                             num_steps=7, norm="l2", device="cpu"):
-    """Compute robust accuracy (accuracy on PGD adversarial examples)."""
-    model.eval()
-    X_t = torch.from_numpy(X).to(device) if isinstance(X, np.ndarray) else X.to(device)
-    y_t = torch.from_numpy(y).to(device) if isinstance(y, np.ndarray) else y.to(device)
-    if step_size is None:
-        step_size = epsilon / 4
-    X_adv = pgd_attack(model, X_t, y_t, epsilon=epsilon,
-                       step_size=step_size, num_steps=num_steps, norm=norm)
-    with torch.no_grad():
-        preds = model(X_adv).argmax(dim=1)
-    return (preds == y_t).float().mean().item()
-
-
 def train_model(model, dataloader, config, checkpoint_dir="checkpoints",
-                run_name="standard", device="cpu",
-                X_test=None, y_test=None):
+                run_name="standard", device="cpu"):
     """
     Train a model with standard or adversarial training.
 
@@ -55,8 +24,6 @@ def train_model(model, dataloader, config, checkpoint_dir="checkpoints",
         checkpoint_dir: where to save checkpoints
         run_name: prefix for checkpoint filenames
         device: "cpu" or "cuda"
-        X_test: optional test inputs for convergence tracking
-        y_test: optional test labels for convergence tracking
 
     Returns:
         history: dict with training metrics per epoch
@@ -99,9 +66,6 @@ def train_model(model, dataloader, config, checkpoint_dir="checkpoints",
         "train_acc": [],
         "adv_loss": [],
         "adv_acc": [],
-        "test_clean_acc": [],
-        "test_robust_acc": [],
-        "lr": [],
     }
 
     checkpoint_epochs = set(config.tess.checkpoint_epochs)
@@ -169,26 +133,6 @@ def train_model(model, dataloader, config, checkpoint_dir="checkpoints",
         history["adv_acc"].append(
             total_adv_correct / total_samples if config.adv.enabled else 0.0
         )
-        history["lr"].append(optimizer.param_groups[0]["lr"])
-
-        # Test evaluation (if test data provided)
-        if X_test is not None and y_test is not None:
-            test_clean = evaluate_accuracy(model, X_test, y_test, device=device)
-            history["test_clean_acc"].append(test_clean)
-            if config.adv.enabled:
-                test_robust = evaluate_robust_accuracy(
-                    model, X_test, y_test,
-                    epsilon=config.adv.epsilon,
-                    num_steps=config.adv.num_steps,
-                    norm=config.adv.norm,
-                    device=device,
-                )
-                history["test_robust_acc"].append(test_robust)
-            else:
-                history["test_robust_acc"].append(0.0)
-        else:
-            history["test_clean_acc"].append(0.0)
-            history["test_robust_acc"].append(0.0)
 
         # Save checkpoint at specified epochs
         if epoch in checkpoint_epochs:
@@ -214,10 +158,6 @@ def train_model(model, dataloader, config, checkpoint_dir="checkpoints",
                     f" | Adv Loss: {history['adv_loss'][-1]:.4f} | "
                     f"Adv Acc: {history['adv_acc'][-1]:.4f}"
                 )
-            if X_test is not None:
-                msg += f" | Test: {history['test_clean_acc'][-1]:.4f}"
-                if config.adv.enabled:
-                    msg += f" | Rob: {history['test_robust_acc'][-1]:.4f}"
             print(msg)
 
     return history
