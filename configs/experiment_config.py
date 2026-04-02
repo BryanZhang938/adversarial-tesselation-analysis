@@ -106,3 +106,58 @@ def get_adversarial_config(dataset="spirals"):
         cfg.train.epochs, cfg.tess.num_checkpoints
     )
     return cfg
+
+
+def make_config(
+    dataset="spirals",
+    hidden_dims=None,
+    epochs=500,
+    lr=0.01,
+    optimizer="sgd",
+    momentum=0.9,
+    scheduler="none",
+    weight_decay=0.0,
+    batch_size=64,
+    adv_enabled=False,
+    epsilon=0.1,
+    pgd_steps=7,
+    norm="l2",
+    num_checkpoints=50,
+    resolution=200,
+    noise=0.1,
+    n_samples=500,
+    seed=42,
+    device="cpu",
+):
+    """
+    Flexible configuration builder for notebook experiments.
+
+    Returns a fully populated ExperimentConfig with checkpoint epochs
+    already computed.
+    """
+    cfg = ExperimentConfig()
+    cfg.data.dataset = dataset
+    cfg.data.n_samples = n_samples
+    cfg.data.noise = noise
+    cfg.data.seed = seed
+    cfg.model.hidden_dims = hidden_dims if hidden_dims is not None else [50]
+    cfg.train.epochs = epochs
+    cfg.train.lr = lr
+    cfg.train.optimizer = optimizer
+    cfg.train.momentum = momentum
+    cfg.train.scheduler = scheduler
+    cfg.train.weight_decay = weight_decay
+    cfg.train.batch_size = batch_size
+    cfg.adv.enabled = adv_enabled
+    cfg.adv.epsilon = epsilon
+    cfg.adv.step_size = epsilon / 4
+    cfg.adv.num_steps = pgd_steps
+    cfg.adv.norm = norm
+    cfg.tess.num_checkpoints = num_checkpoints
+    cfg.tess.resolution = resolution
+    cfg.seed = seed
+    cfg.device = device
+    cfg.tess.checkpoint_epochs = _compute_checkpoint_epochs(
+        cfg.train.epochs, cfg.tess.num_checkpoints
+    )
+    return cfg
