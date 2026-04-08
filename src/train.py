@@ -13,7 +13,8 @@ from src.adversarial import pgd_attack
 
 
 def train_model(model, dataloader, config, checkpoint_dir="checkpoints",
-                run_name="standard", device="cpu"):
+                run_name="standard", device="cpu",
+                X_test=None, y_test=None):
     """
     Train a model with standard or adversarial training.
 
@@ -24,6 +25,8 @@ def train_model(model, dataloader, config, checkpoint_dir="checkpoints",
         checkpoint_dir: where to save checkpoints
         run_name: prefix for checkpoint filenames
         device: "cpu" or "cuda"
+        X_test: optional numpy array of test inputs for tracking test accuracy
+        y_test: optional numpy array of test labels
 
     Returns:
         history: dict with training metrics per epoch
@@ -60,10 +63,21 @@ def train_model(model, dataloader, config, checkpoint_dir="checkpoints",
 
     os.makedirs(checkpoint_dir, exist_ok=True)
 
+    # Prepare test tensors if provided
+    if X_test is not None and y_test is not None:
+        import numpy as np
+        X_test_t = torch.from_numpy(np.asarray(X_test, dtype=np.float32)).to(device)
+        y_test_t = torch.from_numpy(np.asarray(y_test, dtype=np.int64)).to(device)
+    else:
+        X_test_t = None
+        y_test_t = None
+
     history = {
         "epoch": [],
         "train_loss": [],
         "train_acc": [],
+        "test_loss": [],
+        "test_acc": [],
         "adv_loss": [],
         "adv_acc": [],
     }
@@ -134,6 +148,20 @@ def train_model(model, dataloader, config, checkpoint_dir="checkpoints",
             total_adv_correct / total_samples if config.adv.enabled else 0.0
         )
 
+        # Evaluate on test set
+        if X_test_t is not None:
+            model.eval()
+            with torch.no_grad():
+                logits_test = model(X_test_t)
+                test_loss = criterion(logits_test, y_test_t).item()
+                test_correct = (logits_test.argmax(1) == y_test_t).sum().item()
+            history["test_loss"].append(test_loss)
+            history["test_acc"].append(test_correct / len(y_test_t))
+            model.train()
+        else:
+            history["test_loss"].append(0.0)
+            history["test_acc"].append(0.0)
+
         # Save checkpoint at specified epochs
         if epoch in checkpoint_epochs:
             ckpt_path = os.path.join(
@@ -153,6 +181,8 @@ def train_model(model, dataloader, config, checkpoint_dir="checkpoints",
                 f"Loss: {history['train_loss'][-1]:.4f} | "
                 f"Acc: {history['train_acc'][-1]:.4f}"
             )
+            if X_test_t is not None:
+                msg += f" | Test Acc: {history['test_acc'][-1]:.4f}"
             if config.adv.enabled:
                 msg += (
                     f" | Adv Loss: {history['adv_loss'][-1]:.4f} | "

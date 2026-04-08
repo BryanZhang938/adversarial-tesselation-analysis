@@ -43,8 +43,8 @@ class TrainConfig:
 class AdversarialConfig:
     """PGD adversarial training parameters."""
     enabled: bool = False
-    epsilon: float = 0.1       # perturbation radius (l2)
-    step_size: float = 0.025   # alpha = epsilon / 4
+    epsilon: float = 0.03      # perturbation radius (l2); small enough for spirals
+    step_size: float = 0.0075  # alpha = epsilon / 4
     num_steps: int = 7         # K=7 PGD steps per paper
     norm: str = "l2"           # l2 perturbation per paper
 

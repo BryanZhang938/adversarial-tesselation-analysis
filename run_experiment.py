@@ -52,7 +52,7 @@ def parse_args():
                         help="Override epochs (default: 500 spirals, 300 rings)")
     parser.add_argument("--lr", type=float, default=0.01)
     parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--epsilon", type=float, default=0.1)
+    parser.add_argument("--epsilon", type=float, default=0.03)
     parser.add_argument("--pgd_steps", type=int, default=7)
     parser.add_argument("--num_checkpoints", type=int, default=50)
     parser.add_argument("--grid_resolution", type=int, default=200)
@@ -97,7 +97,8 @@ def build_config(args):
     return cfg
 
 
-def run_single_experiment(config, X_train, y_train, dataset, run_name, device):
+def run_single_experiment(config, X_train, y_train, dataset, run_name, device,
+                          X_test=None, y_test=None):
     """Train one model and analyze checkpoints."""
     # Set seed for reproducibility
     torch.manual_seed(config.seed)
@@ -123,6 +124,8 @@ def run_single_experiment(config, X_train, y_train, dataset, run_name, device):
         checkpoint_dir=checkpoint_dir,
         run_name=run_name,
         device=device,
+        X_test=X_test,
+        y_test=y_test,
     )
 
     # Analyze checkpoints
@@ -192,7 +195,8 @@ def main():
 
     hist_std, stats_std, grids_std = run_single_experiment(
         config_std, X_train, y_train, dataset,
-        run_name="standard", device=config.device
+        run_name="standard", device=config.device,
+        X_test=X_test, y_test=y_test,
     )
 
     # ---- Adversarial Training ----
@@ -201,7 +205,8 @@ def main():
 
     hist_adv, stats_adv, grids_adv = run_single_experiment(
         config_adv, X_train, y_train, dataset,
-        run_name="adversarial", device=config.device
+        run_name="adversarial", device=config.device,
+        X_test=X_test, y_test=y_test,
     )
 
     # ---- Generate Figures ----
