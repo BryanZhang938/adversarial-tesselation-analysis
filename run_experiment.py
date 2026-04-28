@@ -34,6 +34,8 @@ from src.visualization import (
     plot_training_comparison,
     plot_epoch_snapshots,
     plot_boundary_distance_histograms,
+    plot_density_snapshots,
+    plot_shattering_comparison,
 )
 
 
@@ -226,10 +228,47 @@ def main():
         run_name="adversarial", figure_dir=config.figure_dir
     )
 
+    # Density-colored tessellation snapshots (per-tile training-point counts)
+    point_counts_std = [g.get("point_counts", np.zeros(0, dtype=int))
+                        for g in grids_std]
+    point_counts_adv = [g.get("point_counts", np.zeros(0, dtype=int))
+                        for g in grids_adv]
+    plot_density_snapshots(
+        grids_std, point_counts_std, X_train, y_train, snapshot_epochs,
+        run_name="standard", figure_dir=config.figure_dir,
+    )
+    plot_density_snapshots(
+        grids_adv, point_counts_adv, X_train, y_train, snapshot_epochs,
+        run_name="adversarial", figure_dir=config.figure_dir,
+    )
+
+    # Shattering comparison (4-panel)
+    plot_shattering_comparison(stats_std, stats_adv, figure_dir=config.figure_dir)
+
     # Boundary distance histograms
     plot_boundary_distance_histograms(
         stats_std, stats_adv, epoch_idx=-1, figure_dir=config.figure_dir
     )
+
+    # Save raw per-tile point counts as a sidecar (one .npz per run, with
+    # one entry per checkpoint keyed `point_counts_<epoch>`). Lets the
+    # shattering distribution be re-analyzed without re-running training.
+    def save_per_tile_counts(stats_list, run_name):
+        out = {}
+        for s in stats_list:
+            counts = s.get("point_counts")
+            if counts is None:
+                continue
+            out[f"point_counts_{int(s['epoch']):04d}"] = np.asarray(counts)
+        if out:
+            sidecar_path = os.path.join(
+                config.results_dir, f"{run_name}_per_tile_counts.npz"
+            )
+            np.savez(sidecar_path, **out)
+            print(f"Saved per-tile counts to {sidecar_path}")
+
+    save_per_tile_counts(stats_std, "standard")
+    save_per_tile_counts(stats_adv, "adversarial")
 
     # ---- Save raw results ----
     def serialize_stats(stats_list):

@@ -651,4 +651,164 @@ def analyze_checkpoint(model_class, checkpoint_path, X_train, config, device="cp
             print(f"  SplineCam failed for epoch {stats['epoch']}: {e}")
             traceback.print_exc()
 
+    # ---- Shattering metrics (per-tile point counts) ----
+    # Prefer SplineCam polygons if available; otherwise use the grid raster.
+    if "splinecam_regions" in grid_data:
+        point_counts, n_orphans = compute_per_tile_point_counts_polygons(
+            grid_data["splinecam_regions"], X_train
+        )
+    else:
+        point_counts, n_orphans = compute_per_tile_point_counts_grid(
+            grid_data["region_ids_grid"], X_train,
+            domain_range=config.data.domain_range,
+        )
+    stats.update(compute_shattering_stats(point_counts, n_orphans=n_orphans))
+    grid_data["point_counts"] = point_counts  # ordered like the tile list
+
     return stats, grid_data
+
+
+# ============================================================================
+# Shattering metrics: per-tile point counts and derived statistics
+# ============================================================================
+
+def compute_per_tile_point_counts_grid(region_ids_grid, X, domain_range):
+    """
+    Count training points per linear region using the grid raster of
+    region IDs. Each point is mapped to the nearest grid pixel; the
+    pixel's region ID determines its tile.
+
+    Args:
+        region_ids_grid: (R, R) int array. Pixel (i, j) is the region ID at
+            (x = lo + j*step, y = lo + i*step), where step = (hi-lo)/(R-1).
+            Region IDs are dense in [0, num_regions).
+        X: (N, 2) array of points to assign.
+        domain_range: (lo, hi) the grid spans (square domain).
+
+    Returns:
+        point_counts: (num_regions,) int array; entry k = points in region k.
+        n_orphans: int, number of points falling outside [lo, hi]^2.
+    """
+    region_ids_grid = np.asarray(region_ids_grid)
+    X = np.asarray(X)
+    R = region_ids_grid.shape[0]
+    lo, hi = domain_range
+    step = (hi - lo) / (R - 1)
+
+    # Map each point to its nearest pixel (col = x bin, row = y bin).
+    col = np.rint((X[:, 0] - lo) / step).astype(int)
+    row = np.rint((X[:, 1] - lo) / step).astype(int)
+    in_bounds = (col >= 0) & (col < R) & (row >= 0) & (row < R)
+    n_orphans = int((~in_bounds).sum())
+
+    region_per_point = region_ids_grid[row[in_bounds], col[in_bounds]]
+    num_regions = int(region_ids_grid.max()) + 1 if region_ids_grid.size else 0
+    point_counts = np.bincount(region_per_point, minlength=num_regions).astype(int)
+    return point_counts, n_orphans
+
+
+def _region_to_vertices(region):
+    """Coerce a SplineCam region to an (M, 2) numpy vertex array."""
+    if hasattr(region, "exterior"):  # shapely.geometry.Polygon
+        return np.asarray(region.exterior.coords, dtype=float)
+    if hasattr(region, "vertices"):  # matplotlib.path.Path-like
+        return np.asarray(region.vertices, dtype=float)
+    return np.asarray(region, dtype=float)
+
+
+def compute_per_tile_point_counts_polygons(regions, X):
+    """
+    Count training points per polygon using matplotlib.path.Path.contains_points
+    for batched point-in-polygon tests. Each point is assigned to at most one
+    polygon (the first one containing it) so overlap from numerical edge cases
+    can't double-count.
+
+    Args:
+        regions: iterable of polygon-like objects (SplineCam output).
+        X: (N, 2) array of points.
+
+    Returns:
+        point_counts: (len(regions),) int array; entry k = points in regions[k].
+        n_orphans: int, number of points not contained by any polygon.
+    """
+    from matplotlib.path import Path  # local import; matplotlib is already a dep
+
+    X = np.asarray(X, dtype=float)
+    n_points = len(X)
+    point_counts = np.zeros(len(regions), dtype=int)
+    assigned = np.zeros(n_points, dtype=bool)
+
+    for k, region in enumerate(regions):
+        verts = _region_to_vertices(region)
+        if verts.shape[0] < 3:
+            continue
+        path = Path(verts)
+        # Mask out already-assigned points so each point is counted in at
+        # most one polygon, even if Path.contains_points classifies edge
+        # points as inside multiple adjacent polygons.
+        candidates = ~assigned
+        if not candidates.any():
+            break
+        inside = np.zeros(n_points, dtype=bool)
+        inside[candidates] = path.contains_points(X[candidates])
+        point_counts[k] = int(inside.sum())
+        assigned |= inside
+
+    n_orphans = int((~assigned).sum())
+    return point_counts, n_orphans
+
+
+def compute_shattering_stats(point_counts, n_orphans=0):
+    """
+    Compute neural-shattering statistics from a per-tile point-count array.
+
+    Definitions:
+        n_empty_tiles  : tiles with 0 points
+        n_single_tiles : tiles with exactly 1 point ("shattered" tiles)
+        n_multi_tiles  : tiles with 2+ points
+        mean_points_per_nonempty_tile : mean of point_counts where > 0
+        shattering_fraction : fraction of *placed* points that are alone in
+            their tile, i.e. n_single_tiles / sum(point_counts). Points that
+            failed to land in any tile (n_orphans) are excluded from the
+            denominator: a coverage gap is not a shattering signal.
+
+    Args:
+        point_counts: 1-D int array, one entry per tile.
+        n_orphans: int, points outside all tiles (sanity-check field; if
+            this is more than a handful something is wrong with the
+            tessellation extent).
+
+    Returns:
+        dict with the metrics above plus n_orphans and the raw point_counts
+        array (so it can be saved alongside scalars).
+    """
+    point_counts = np.asarray(point_counts, dtype=int)
+    n_total_in_tiles = int(point_counts.sum())
+    nonempty_mask = point_counts > 0
+
+    n_empty_tiles = int((point_counts == 0).sum())
+    n_single_tiles = int((point_counts == 1).sum())
+    n_multi_tiles = int((point_counts >= 2).sum())
+
+    if nonempty_mask.any():
+        mean_points_per_nonempty_tile = float(point_counts[nonempty_mask].mean())
+    else:
+        mean_points_per_nonempty_tile = 0.0
+
+    if n_total_in_tiles > 0:
+        shattering_fraction = float(n_single_tiles) / float(n_total_in_tiles)
+    else:
+        # All points orphaned; metric is undefined. Return 0.0 so plots
+        # don't choke, and rely on n_orphans for the diagnostic signal.
+        shattering_fraction = 0.0
+
+    return {
+        "n_tiles": int(point_counts.size),
+        "n_empty_tiles": n_empty_tiles,
+        "n_single_tiles": n_single_tiles,
+        "n_multi_tiles": n_multi_tiles,
+        "mean_points_per_nonempty_tile": mean_points_per_nonempty_tile,
+        "shattering_fraction": shattering_fraction,
+        "n_orphans": int(n_orphans),
+        "point_counts": point_counts,
+    }
