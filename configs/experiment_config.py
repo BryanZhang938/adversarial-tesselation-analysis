@@ -63,6 +63,12 @@ class TessellationConfig:
     compute_cell_areas: bool = True
     compute_boundary_distance: bool = True
     compute_slope_norms: bool = True
+    # Toggle SplineCam exact-tessellation analysis. The grid-based path
+    # (region count, local complexity, boundary density, shattering
+    # metrics) runs unconditionally; SplineCam adds vector polygons and
+    # `sc_*` stats. SplineCam has Colab-specific reliability issues —
+    # set this to False to skip it deterministically and cut noise.
+    use_splinecam: bool = True
 
 @dataclass
 class ExperimentConfig:

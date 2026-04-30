@@ -637,8 +637,13 @@ def analyze_checkpoint(model_class, checkpoint_path, X_train, config, device="cp
         )
         stats.update({f"poisson_{k}": v for k, v in poisson_stats.items()})
 
-    # SplineCam analysis if available AND on CUDA
-    if SPLINECAM_AVAILABLE and torch.cuda.is_available():
+    # SplineCam analysis if available AND on CUDA AND not opted out.
+    # Skip when config.tess.use_splinecam=False so noisy upstream bugs
+    # don't drown out checkpoint-by-checkpoint output. Failures are
+    # caught and reported as a single line; the grid path always
+    # produces the shattering metrics regardless.
+    use_sc = getattr(config.tess, "use_splinecam", True)
+    if use_sc and SPLINECAM_AVAILABLE and torch.cuda.is_available():
         try:
             regions, db_edges, T = compute_splinecam_tessellation(
                 model, domain_range=config.data.domain_range, device="cuda"
@@ -650,9 +655,8 @@ def analyze_checkpoint(model_class, checkpoint_path, X_train, config, device="cp
             grid_data["splinecam_regions"] = regions
             grid_data["splinecam_db_edges"] = db_edges
         except Exception as e:
-            import traceback
-            print(f"  SplineCam failed for epoch {stats['epoch']}: {e}")
-            traceback.print_exc()
+            print(f"  SplineCam failed for epoch {stats['epoch']}: "
+                  f"{type(e).__name__}: {e}")
 
     # ---- Shattering metrics (per-tile point counts) ----
     # Prefer SplineCam polygons if available; otherwise use the grid raster.
