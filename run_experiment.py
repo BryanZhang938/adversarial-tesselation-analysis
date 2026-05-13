@@ -7,6 +7,7 @@ Usage:
     python run_experiment.py
     python run_experiment.py --dataset concentric_rings
     python run_experiment.py --epochs 300 --epsilon 0.15
+    python run_experiment.py --adv_norms l1 l2 linf --no_splinecam
 """
 
 import os
@@ -14,6 +15,7 @@ import sys
 import argparse
 import json
 import copy
+from collections import OrderedDict
 import numpy as np
 import torch
 
@@ -28,14 +30,18 @@ from configs.experiment_config import (
 from src.datasets import get_dataset, get_dataloader
 from src.models import make_relu_mlp, count_parameters
 from src.train import train_model
+from src.adversarial import normalize_norm
 from src.tessellation_analysis import analyze_checkpoint
 from src.visualization import (
     plot_dataset,
     plot_training_comparison,
+    plot_training_comparison_multi,
     plot_epoch_snapshots,
     plot_boundary_distance_histograms,
+    plot_boundary_distance_histograms_multi,
     plot_density_snapshots,
     plot_shattering_comparison,
+    plot_shattering_comparison_multi,
 )
 
 
@@ -55,9 +61,22 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=0.01)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--epsilon", type=float, default=0.03)
+    parser.add_argument("--epsilon_l1", type=float, default=None,
+                        help="Override perturbation budget for L1 PGD-AT")
+    parser.add_argument("--epsilon_l2", type=float, default=None,
+                        help="Override perturbation budget for L2 PGD-AT")
+    parser.add_argument("--epsilon_linf", type=float, default=None,
+                        help="Override perturbation budget for Linf PGD-AT")
     parser.add_argument("--pgd_steps", type=int, default=7)
+    parser.add_argument("--adv_norms", type=str, nargs="+", default=["l2"],
+                        help=(
+                            "Adversarial training norms to run. Use any of: "
+                            "l1 l2 linf. Default: l2 (backward-compatible)."
+                        ))
     parser.add_argument("--num_checkpoints", type=int, default=50)
     parser.add_argument("--grid_resolution", type=int, default=200)
+    parser.add_argument("--no_splinecam", action="store_true",
+                        help="Skip SplineCam exact polygon analysis")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
     return parser.parse_args()
@@ -88,6 +107,7 @@ def build_config(args):
     cfg.adv.step_size = args.epsilon / 4
     cfg.tess.resolution = args.grid_resolution
     cfg.tess.num_checkpoints = args.num_checkpoints
+    cfg.tess.use_splinecam = not args.no_splinecam
     cfg.seed = args.seed
     cfg.device = args.device
 
@@ -97,6 +117,29 @@ def build_config(args):
     )
 
     return cfg
+
+
+def unique_adv_norms(norms):
+    """Normalize and deduplicate adversarial norms while preserving order."""
+    out = []
+    for norm in norms:
+        normalized = normalize_norm(norm)
+        if normalized not in out:
+            out.append(normalized)
+    return out
+
+
+def adv_epsilon_for_norm(args, norm):
+    """Resolve per-norm epsilon, falling back to --epsilon."""
+    norm = normalize_norm(norm)
+    override = getattr(args, f"epsilon_{norm}", None)
+    return args.epsilon if override is None else override
+
+
+def adv_run_name(norm):
+    """Stable run/checkpoint name for an adversarial-training norm."""
+    norm = normalize_norm(norm)
+    return "adversarial" if norm == "l2" else f"adversarial_{norm}"
 
 
 def run_single_experiment(config, X_train, y_train, dataset, run_name, device,
@@ -163,6 +206,7 @@ def run_single_experiment(config, X_train, y_train, dataset, run_name, device,
 def main():
     args = parse_args()
     config = build_config(args)
+    adv_norms = unique_adv_norms(args.adv_norms)
 
     # Create output directories
     os.makedirs(config.checkpoint_dir, exist_ok=True)
@@ -191,6 +235,10 @@ def main():
     fig.savefig(os.path.join(config.figure_dir, "dataset.pdf"))
     plt.close()
 
+    histories_by_run = OrderedDict()
+    stats_by_run = OrderedDict()
+    grids_by_run = OrderedDict()
+
     # ---- Standard Training ----
     config_std = copy.deepcopy(config)
     config_std.adv.enabled = False
@@ -200,55 +248,91 @@ def main():
         run_name="standard", device=config.device,
         X_test=X_test, y_test=y_test,
     )
+    histories_by_run["standard"] = hist_std
+    stats_by_run["standard"] = stats_std
+    grids_by_run["standard"] = grids_std
 
-    # ---- Adversarial Training ----
-    config_adv = copy.deepcopy(config)
-    config_adv.adv.enabled = True
+    # ---- Adversarial Training Variants ----
+    adv_results = OrderedDict()
+    for norm in adv_norms:
+        config_adv = copy.deepcopy(config)
+        config_adv.adv.enabled = True
+        config_adv.adv.norm = norm
+        config_adv.adv.epsilon = adv_epsilon_for_norm(args, norm)
+        config_adv.adv.step_size = config_adv.adv.epsilon / 4
+        run_name = adv_run_name(norm)
 
-    hist_adv, stats_adv, grids_adv = run_single_experiment(
-        config_adv, X_train, y_train, dataset,
-        run_name="adversarial", device=config.device,
-        X_test=X_test, y_test=y_test,
-    )
+        hist_adv, stats_adv, grids_adv = run_single_experiment(
+            config_adv, X_train, y_train, dataset,
+            run_name=run_name, device=config.device,
+            X_test=X_test, y_test=y_test,
+        )
+        histories_by_run[run_name] = hist_adv
+        stats_by_run[run_name] = stats_adv
+        grids_by_run[run_name] = grids_adv
+        adv_results[run_name] = {
+            "norm": norm,
+            "epsilon": config_adv.adv.epsilon,
+            "step_size": config_adv.adv.step_size,
+            "stats": stats_adv,
+            "grids": grids_adv,
+        }
 
     # ---- Generate Figures ----
     print("\nGenerating figures...")
 
     # Main comparison plot
-    plot_training_comparison(stats_std, stats_adv, figure_dir=config.figure_dir)
+    use_legacy_pair_plots = len(stats_by_run) == 2 and "adversarial" in stats_by_run
+    if use_legacy_pair_plots:
+        first_adv = "adversarial"
+        plot_training_comparison(
+            stats_by_run["standard"], stats_by_run[first_adv],
+            figure_dir=config.figure_dir,
+        )
+    else:
+        plot_training_comparison_multi(
+            stats_by_run, figure_dir=config.figure_dir,
+        )
 
-    # Epoch snapshots
-    snapshot_epochs = [s["epoch"] for s in stats_std]
-    plot_epoch_snapshots(
-        grids_std, X_train, y_train, snapshot_epochs,
-        run_name="standard", figure_dir=config.figure_dir
-    )
-    plot_epoch_snapshots(
-        grids_adv, X_train, y_train, snapshot_epochs,
-        run_name="adversarial", figure_dir=config.figure_dir
-    )
+    # Epoch snapshots for every training method
+    for run_name, grids in grids_by_run.items():
+        epochs = [s["epoch"] for s in stats_by_run[run_name]]
+        plot_epoch_snapshots(
+            grids, X_train, y_train, epochs,
+            run_name=run_name, figure_dir=config.figure_dir
+        )
 
-    # Density-colored tessellation snapshots (per-tile training-point counts)
-    point_counts_std = [g.get("point_counts", np.zeros(0, dtype=int))
-                        for g in grids_std]
-    point_counts_adv = [g.get("point_counts", np.zeros(0, dtype=int))
-                        for g in grids_adv]
-    plot_density_snapshots(
-        grids_std, point_counts_std, X_train, y_train, snapshot_epochs,
-        run_name="standard", figure_dir=config.figure_dir,
-    )
-    plot_density_snapshots(
-        grids_adv, point_counts_adv, X_train, y_train, snapshot_epochs,
-        run_name="adversarial", figure_dir=config.figure_dir,
-    )
+        # Density-colored tessellation snapshots (per-tile training-point counts)
+        point_counts = [g.get("point_counts", np.zeros(0, dtype=int))
+                        for g in grids]
+        plot_density_snapshots(
+            grids, point_counts, X_train, y_train, epochs,
+            run_name=run_name, figure_dir=config.figure_dir,
+        )
 
     # Shattering comparison (4-panel)
-    plot_shattering_comparison(stats_std, stats_adv, figure_dir=config.figure_dir)
+    if use_legacy_pair_plots:
+        first_adv = "adversarial"
+        plot_shattering_comparison(
+            stats_by_run["standard"], stats_by_run[first_adv],
+            figure_dir=config.figure_dir,
+        )
+    else:
+        plot_shattering_comparison_multi(
+            stats_by_run, figure_dir=config.figure_dir,
+        )
 
     # Boundary distance histograms
-    plot_boundary_distance_histograms(
-        stats_std, stats_adv, epoch_idx=-1, figure_dir=config.figure_dir
-    )
+    if use_legacy_pair_plots:
+        first_adv = "adversarial"
+        plot_boundary_distance_histograms(
+            stats_by_run["standard"], stats_by_run[first_adv],
+            epoch_idx=-1, figure_dir=config.figure_dir
+        )
+    else:
+        plot_boundary_distance_histograms_multi(
+            stats_by_run, epoch_idx=-1, figure_dir=config.figure_dir
+        )
 
     # Save raw per-tile point counts as a sidecar (one .npz per run, with
     # one entry per checkpoint keyed `point_counts_<epoch>`). Lets the
@@ -267,8 +351,8 @@ def main():
             np.savez(sidecar_path, **out)
             print(f"Saved per-tile counts to {sidecar_path}")
 
-    save_per_tile_counts(stats_std, "standard")
-    save_per_tile_counts(stats_adv, "adversarial")
+    for run_name, stats_list in stats_by_run.items():
+        save_per_tile_counts(stats_list, run_name)
 
     # ---- Save raw results ----
     def serialize_stats(stats_list):
@@ -298,13 +382,26 @@ def main():
             "hidden_dims": config.model.hidden_dims,
             "epochs": config.train.epochs,
             "epsilon": config.adv.epsilon,
+            "adv_norms": adv_norms,
+            "epsilon_by_norm": {
+                norm: adv_epsilon_for_norm(args, norm) for norm in adv_norms
+            },
+            "pgd_steps": config.adv.num_steps,
             "noise": config.data.noise,
             "inner_radius": config.data.inner_radius,
             "outer_radius": config.data.outer_radius,
         },
-        "standard": serialize_stats(stats_std),
-        "adversarial": serialize_stats(stats_adv),
+        "standard": serialize_stats(stats_by_run["standard"]),
+        "adversarial_runs": {
+            run_name: serialize_stats(payload["stats"])
+            for run_name, payload in adv_results.items()
+        },
     }
+    # Backward-compatible alias for older downstream scripts: keep the first
+    # adversarial run at top-level "adversarial".
+    if adv_results:
+        first_run = next(iter(adv_results))
+        results["adversarial"] = serialize_stats(adv_results[first_run]["stats"])
     results_path = os.path.join(config.results_dir, "results.json")
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)

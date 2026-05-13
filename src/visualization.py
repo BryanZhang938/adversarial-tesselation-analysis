@@ -165,6 +165,71 @@ def plot_training_comparison(stats_standard, stats_adversarial, figure_dir="figu
     print(f"Saved metrics_comparison to {figure_dir}/")
 
 
+def _method_style(run_name, idx=0):
+    """Consistent color/marker choices for multi-method comparison plots."""
+    styles = {
+        "standard": ("#2196F3", "o", "Standard"),
+        "adversarial": ("#FF5722", "s", "PGD-AT"),
+        "adversarial_l1": ("#43A047", "^", "PGD-AT L1"),
+        "adversarial_l2": ("#FF5722", "s", "PGD-AT L2"),
+        "adversarial_linf": ("#8E24AA", "D", "PGD-AT Linf"),
+    }
+    if run_name in styles:
+        return styles[run_name]
+    colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", ["#333333"])
+    markers = ["o", "s", "^", "D", "v", "P", "X"]
+    label = run_name.replace("_", " ").title()
+    return colors[idx % len(colors)], markers[idx % len(markers)], label
+
+
+def plot_training_comparison_multi(stats_by_run, figure_dir="figures",
+                                   filename="metrics_comparison"):
+    """
+    Generalized tessellation statistics comparison for any number of runs.
+
+    Args:
+        stats_by_run: ordered dict-like mapping run_name -> stats list.
+            Expected keys include "standard", "adversarial_l1",
+            "adversarial_l2", "adversarial_linf", etc.
+        figure_dir: output directory.
+        filename: basename for saved PDF/PNG files.
+    """
+    os.makedirs(figure_dir, exist_ok=True)
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+
+    panels = [
+        ("num_regions_grid", "# Linear Regions (grid)", "(a) Region Count"),
+        ("local_region_count_mean", "Mean Local Region Count",
+         "(b) Local Complexity Near Data"),
+        ("boundary_dist_mean", "Mean Boundary Distance",
+         "(c) Data-to-Boundary Distance"),
+        ("boundary_density", "Boundary Density",
+         "(d) Decision Boundary Density"),
+    ]
+
+    for ax, (metric, ylabel, title) in zip(axes.ravel(), panels):
+        for i, (run_name, stats_list) in enumerate(stats_by_run.items()):
+            if not stats_list:
+                continue
+            color, marker, label = _method_style(run_name, i)
+            epochs = [s["epoch"] for s in stats_list]
+            values = [s.get(metric, 0) for s in stats_list]
+            ax.plot(epochs, values, marker=marker, linestyle="-",
+                    label=label, color=color, markersize=4)
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.legend()
+
+    fig.suptitle("Tessellation Statistics Across Training Methods",
+                 fontsize=14, y=1.02)
+    plt.tight_layout()
+    plt.savefig(os.path.join(figure_dir, f"{filename}.pdf"))
+    plt.savefig(os.path.join(figure_dir, f"{filename}.png"))
+    plt.close()
+    print(f"Saved {filename} to {figure_dir}/")
+
+
 def plot_epoch_snapshots(grid_data_list, X, y, epochs, run_name="standard",
                           figure_dir="figures"):
     """
@@ -218,6 +283,40 @@ def plot_boundary_distance_histograms(stats_standard, stats_adversarial,
     plt.tight_layout()
     plt.savefig(os.path.join(figure_dir, f"boundary_dist_hist_ep{ep}.pdf"))
     plt.savefig(os.path.join(figure_dir, f"boundary_dist_hist_ep{ep}.png"))
+    plt.close()
+
+
+def plot_boundary_distance_histograms_multi(stats_by_run, epoch_idx=-1,
+                                            figure_dir="figures",
+                                            filename=None):
+    """
+    Compare data-to-boundary distance distributions for multiple runs.
+    """
+    os.makedirs(figure_dir, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(6, 4))
+
+    final_ep = "?"
+    for i, (run_name, stats_list) in enumerate(stats_by_run.items()):
+        if not stats_list:
+            continue
+        stats = stats_list[epoch_idx]
+        dists = stats.get("boundary_distances", [])
+        if len(dists) == 0:
+            continue
+        final_ep = stats.get("epoch", final_ep)
+        color, _, label = _method_style(run_name, i)
+        ax.hist(dists, bins=30, alpha=0.45, label=label,
+                color=color, density=True)
+
+    ax.set_xlabel("Distance to Decision Boundary")
+    ax.set_ylabel("Density")
+    ax.set_title(f"Boundary Distance Distribution (Epoch {final_ep})")
+    ax.legend()
+    plt.tight_layout()
+    if filename is None:
+        filename = f"boundary_dist_hist_ep{final_ep}"
+    plt.savefig(os.path.join(figure_dir, f"{filename}.pdf"))
+    plt.savefig(os.path.join(figure_dir, f"{filename}.png"))
     plt.close()
 
 
@@ -487,3 +586,111 @@ def plot_shattering_comparison(stats_standard, stats_adversarial,
     plt.savefig(os.path.join(figure_dir, "shattering_comparison.png"))
     plt.close()
     print(f"Saved shattering_comparison to {figure_dir}/")
+
+
+def plot_shattering_comparison_multi(stats_by_run, figure_dir="figures",
+                                     filename="shattering_comparison"):
+    """
+    Four-panel shattering comparison for any number of training methods.
+
+    Panels:
+        (a) Fraction of empty tiles vs epoch
+        (b) Fraction of single-point tiles vs epoch
+        (c) Mean points per non-empty tile vs epoch
+        (d) Histogram of final-epoch per-tile point counts for all runs
+    """
+    os.makedirs(figure_dir, exist_ok=True)
+
+    def _frac(stats_list, key):
+        return [
+            (s.get(key, 0) / s["n_tiles"]) if s.get("n_tiles", 0) > 0 else 0.0
+            for s in stats_list
+        ]
+
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+
+    # (a) Fraction of empty tiles
+    ax = axes[0, 0]
+    for i, (run_name, stats_list) in enumerate(stats_by_run.items()):
+        if not stats_list:
+            continue
+        color, marker, label = _method_style(run_name, i)
+        ax.plot([s["epoch"] for s in stats_list],
+                _frac(stats_list, "n_empty_tiles"),
+                marker=marker, linestyle="-", label=label, color=color,
+                markersize=4)
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Fraction of Empty Tiles")
+    ax.set_title("(a) Empty-Tile Fraction")
+    ax.set_ylim(0, 1)
+    ax.legend()
+
+    # (b) Fraction of single-point tiles
+    ax = axes[0, 1]
+    for i, (run_name, stats_list) in enumerate(stats_by_run.items()):
+        if not stats_list:
+            continue
+        color, marker, label = _method_style(run_name, i)
+        ax.plot([s["epoch"] for s in stats_list],
+                _frac(stats_list, "n_single_tiles"),
+                marker=marker, linestyle="-", label=label, color=color,
+                markersize=4)
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Fraction of Single-Point Tiles")
+    ax.set_title("(b) Shattered-Tile Fraction")
+    ax.set_ylim(0, 1)
+    ax.legend()
+
+    # (c) Mean points per non-empty tile
+    ax = axes[1, 0]
+    for i, (run_name, stats_list) in enumerate(stats_by_run.items()):
+        if not stats_list:
+            continue
+        color, marker, label = _method_style(run_name, i)
+        ax.plot([s["epoch"] for s in stats_list],
+                [s.get("mean_points_per_nonempty_tile", 0)
+                 for s in stats_list],
+                marker=marker, linestyle="-", label=label, color=color,
+                markersize=4)
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Mean Points / Non-Empty Tile")
+    ax.set_title("(c) Mean Density of Occupied Tiles")
+    ax.legend()
+
+    # (d) Histogram of final-epoch per-tile point counts
+    ax = axes[1, 1]
+    all_counts = []
+    final_ep = "?"
+    for stats_list in stats_by_run.values():
+        if stats_list:
+            pc = np.asarray(stats_list[-1].get("point_counts", []))
+            if pc.size:
+                all_counts.append(pc)
+            final_ep = stats_list[-1].get("epoch", final_ep)
+    if all_counts:
+        max_count = int(max(pc.max() for pc in all_counts))
+        bins = np.arange(0, max_count + 2) - 0.5
+        for i, (run_name, stats_list) in enumerate(stats_by_run.items()):
+            if not stats_list:
+                continue
+            pc = np.asarray(stats_list[-1].get("point_counts", []))
+            if not pc.size:
+                continue
+            color, _, label = _method_style(run_name, i)
+            ax.hist(pc, bins=bins, alpha=0.45, label=label, color=color)
+        ax.set_yscale("log")
+        ax.set_xlabel("Points per Tile")
+        ax.set_ylabel("Tile Count (log)")
+        ax.legend()
+    else:
+        ax.text(0.5, 0.5, "no point_counts in final stats",
+                ha="center", va="center", transform=ax.transAxes)
+    ax.set_title(f"(d) Per-Tile Count Histogram (Epoch {final_ep})")
+
+    fig.suptitle("Neural Shattering Across Training Methods",
+                 fontsize=14, y=1.02)
+    plt.tight_layout()
+    plt.savefig(os.path.join(figure_dir, f"{filename}.pdf"))
+    plt.savefig(os.path.join(figure_dir, f"{filename}.png"))
+    plt.close()
+    print(f"Saved {filename} to {figure_dir}/")

@@ -1,10 +1,60 @@
 """
-PGD adversarial attack for adversarial training.
-Implements the Madry et al. (2018) min-max formulation.
+PGD adversarial attacks for adversarial training.
+Implements the Madry et al. (2018) min-max formulation for L1, L2,
+and Linf perturbation sets.
 """
 
 import torch
 import torch.nn as nn
+
+
+def normalize_norm(norm):
+    """Normalize common norm aliases to {"l1", "l2", "linf"}."""
+    key = str(norm).lower().replace("_", "").replace("-", "")
+    aliases = {
+        "1": "l1",
+        "l1": "l1",
+        "2": "l2",
+        "l2": "l2",
+        "inf": "linf",
+        "infinity": "linf",
+        "linf": "linf",
+        "l∞": "linf",
+    }
+    if key not in aliases:
+        raise ValueError(f"Unknown adversarial norm: {norm}")
+    return aliases[key]
+
+
+def project_l1_ball(delta, epsilon):
+    """
+    Project a batch of perturbations onto the L1 ball of radius epsilon.
+
+    Implements the batched Duchi et al. simplex projection on abs(delta),
+    then restores signs. `delta` is expected to have shape (B, D).
+    """
+    if epsilon < 0:
+        raise ValueError("epsilon must be non-negative")
+    if epsilon == 0:
+        return torch.zeros_like(delta)
+
+    orig_shape = delta.shape
+    flat = delta.reshape(delta.shape[0], -1)
+    abs_flat = flat.abs()
+    l1_norm = abs_flat.sum(dim=1, keepdim=True)
+    inside = l1_norm <= epsilon
+
+    # Sort each row descending and find the threshold theta for rows outside
+    # the L1 ball. Rows already inside are left unchanged below.
+    u, _ = torch.sort(abs_flat, dim=1, descending=True)
+    cssv = torch.cumsum(u, dim=1)
+    idx = torch.arange(1, flat.shape[1] + 1, device=delta.device).view(1, -1)
+    cond = u * idx > (cssv - epsilon)
+    rho = cond.sum(dim=1, keepdim=True).clamp(min=1)
+    theta = (cssv.gather(1, rho - 1) - epsilon) / rho
+    projected = flat.sign() * torch.clamp(abs_flat - theta, min=0.0)
+    projected = torch.where(inside, flat, projected)
+    return projected.reshape(orig_shape)
 
 
 def pgd_attack(model, x, y, epsilon, step_size, num_steps,
@@ -19,12 +69,13 @@ def pgd_attack(model, x, y, epsilon, step_size, num_steps,
         epsilon: perturbation budget
         step_size: step size per iteration
         num_steps: number of PGD steps
-        norm: "linf" or "l2"
+        norm: "l1", "l2", or "linf"
         random_start: whether to initialize from random point in ball
 
     Returns:
         x_adv: adversarial examples, shape (B, D)
     """
+    norm = normalize_norm(norm)
     model.eval()
     x_adv = x.clone().detach()
 
@@ -33,7 +84,14 @@ def pgd_attack(model, x, y, epsilon, step_size, num_steps,
             x_adv = x_adv + torch.empty_like(x_adv).uniform_(-epsilon, epsilon)
         elif norm == "l2":
             delta = torch.randn_like(x_adv)
-            delta = delta / delta.norm(dim=-1, keepdim=True) * epsilon
+            radius = torch.rand(x_adv.shape[0], 1, device=x_adv.device)
+            radius = radius.pow(1.0 / x_adv.shape[1])
+            delta = delta / delta.norm(dim=-1, keepdim=True).clamp(min=1e-12)
+            delta = delta * epsilon * radius
+            x_adv = x_adv + delta
+        elif norm == "l1":
+            delta = torch.empty_like(x_adv).uniform_(-1.0, 1.0)
+            delta = project_l1_ball(delta, epsilon)
             x_adv = x_adv + delta
         x_adv = x_adv.detach()
 
@@ -63,6 +121,17 @@ def pgd_attack(model, x, y, epsilon, step_size, num_steps,
                     epsilon / delta_norm.clamp(min=1e-12)
                 )
                 x_adv = x + delta * factor
+            elif norm == "l1":
+                # Steepest ascent direction for an L1 constraint uses the
+                # dual L_inf norm: put the step on the largest-gradient
+                # coordinate for each sample, then project back to the L1 ball.
+                idx = grad.abs().argmax(dim=-1, keepdim=True)
+                step = torch.zeros_like(grad).scatter_(
+                    1, idx, grad.gather(1, idx).sign()
+                )
+                x_adv = x_adv + step_size * step
+                delta = project_l1_ball(x_adv - x, epsilon)
+                x_adv = x + delta
 
         x_adv = x_adv.detach()
 

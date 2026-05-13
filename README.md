@@ -57,3 +57,10 @@ This will:
 3. Save checkpoints at regular intervals
 4. Compute tessellation statistics at each checkpoint
 5. Generate comparison plots in `figures/`
+
+To compare multiple adversarial-training perturbation sets in one run:
+```bash
+python run_experiment.py --adv_norms l1 l2 linf --no_splinecam
+```
+Use `--epsilon_l1`, `--epsilon_l2`, and `--epsilon_linf` to set different
+budgets per norm; otherwise each norm uses `--epsilon`.
